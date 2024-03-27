@@ -14,6 +14,8 @@ struct ScoreData {
     score: osu_db::Replay,
     map: osu_db::listing::Beatmap,
     pp: f64,
+    sr: f64,
+    pfc: bool,
 }
 
 #[tokio::main]
@@ -29,7 +31,7 @@ async fn main() -> Result<(), io::Error> {
     println!("osu!.db found with {} beatmaps", listing.beatmaps.len());
 
     println!("Processing maps and scores with pp calc");
-    let (scores_with_pp, nine_pfcs) = process_scores(&score_list, &listing);
+    let scores_with_pp = process_scores(&score_list, &listing);
     println!("Processed {} scores", scores_with_pp.len());
 
     println!("Removing duplicates through pp sort");
@@ -37,16 +39,15 @@ async fn main() -> Result<(), io::Error> {
     println!("Down to {} scores", unique_scores.len());
     
     println!("Exporting tops to .txt");
-    export_tops(&mut unique_scores, nine_pfcs)?;
+    export_tops(&mut unique_scores)?;
     print!("Done");
 
     Ok(())
 }
 
-fn process_scores(score_list: &ScoreList, listing: &Listing) -> (Vec<ScoreData>, u32) {
+fn process_scores(score_list: &ScoreList, listing: &Listing) -> Vec<ScoreData> {
     let mut scores_with_pp = Vec::new();
     let mut map_count = 0;
-    let mut nine_pfcs = 0;
 
     for beatmap_scores in &score_list.beatmaps {
         println!("Processing beatmap in database {}/{}", map_count, score_list.beatmaps.len());
@@ -63,6 +64,8 @@ fn process_scores(score_list: &ScoreList, listing: &Listing) -> (Vec<ScoreData>,
                         continue;
                     }
                 };
+            
+            if beatmap.status == osu_db::listing::RankedStatus::Ranked {continue;}
 
             let path = PathBuf::from("Songs")
                 .join(&beatmap.folder_name.as_ref().unwrap_or(&"Unknown Folder".to_string()))
@@ -86,18 +89,20 @@ fn process_scores(score_list: &ScoreList, listing: &Listing) -> (Vec<ScoreData>,
                 .n50(score.count_50 as usize)
                 .calculate();
 
-            nine_pfcs += (9.0 <= result.stars() && result.stars() < 10.0 && score.perfect_combo) as u32;
+            if result.pp() >= 2000.0 {continue;}
 
             scores_with_pp.push(ScoreData {
                 score: score.clone(),
                 map: beatmap.clone(),
                 pp: result.pp(),
+                sr: result.stars(),
+                pfc: score.perfect_combo,
             });
             score_count += 1;
         }
         map_count += 1;
     }
-    (scores_with_pp, nine_pfcs)
+    scores_with_pp
 }
 
 fn remove_duplicates(scores_with_pp: Vec<ScoreData>) -> Vec<ScoreData> {
@@ -160,7 +165,7 @@ bitflags! {
     }
 }
 
-fn export_tops(unique_scores: &mut [ScoreData], nine_pfcs: u32) -> Result<(), io::Error> {
+fn export_tops(unique_scores: &mut [ScoreData]) -> Result<(), io::Error> {
     unique_scores.sort_by(|a, b| b.pp.partial_cmp(&a.pp).unwrap_or(std::cmp::Ordering::Equal));
 
     let timestamp = Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
@@ -181,9 +186,16 @@ fn export_tops(unique_scores: &mut [ScoreData], nine_pfcs: u32) -> Result<(), io
     let bonus_pp: f64 = (417.0 - 1.0 / 3.0) * (1.0 - 0.995f64.powf(std::cmp::min(1000, unique_scores.len()) as f64));
     println!("Bonus pp: {:.2}", bonus_pp);
 
+    println!("Counting 9* PFCs");
+    let count = unique_scores.iter()
+        .filter(|score| score.sr >= 9.0 && score.sr < 10.0 && score.pfc)
+        .count();
+    println!("9* PFCs: {}", count);
+
+    writeln!(file, "Total pp: {:.2}", total_pp + bonus_pp)?;
     writeln!(file, "Total pp (without bonus pp): {:.2}", total_pp)?;
     writeln!(file, "Bonus pp: {:.2}", bonus_pp)?;
-    writeln!(file, "9 star PFCs: {:.0}", nine_pfcs)?;
+    writeln!(file, "9* PFCs: {}", count)?;
 
     println!("Writing top 100");
     for (i, score_pp) in unique_scores.iter().take(100).enumerate() {
