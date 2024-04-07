@@ -13,9 +13,7 @@ use bitflags::bitflags;
 struct ScoreData {
     score: osu_db::Replay,
     map: osu_db::listing::Beatmap,
-    pp: f64,
-    sr: f64,
-    pfc: bool,
+    attributes: rosu_pp::PerformanceAttributes,
 }
 
 #[tokio::main]
@@ -79,7 +77,7 @@ fn process_scores(score_list: &ScoreList, listing: &Listing) -> Vec<ScoreData> {
                 }
             };
 
-            let result = map
+            let attributes = map
                 .pp()
                 .mods(score.mods.0)
                 .combo(score.max_combo as usize)
@@ -89,14 +87,12 @@ fn process_scores(score_list: &ScoreList, listing: &Listing) -> Vec<ScoreData> {
                 .n50(score.count_50 as usize)
                 .calculate();
 
-            if result.pp() >= 2000.0 {continue;}
+            if attributes.pp() >= 2000.0 {continue;}
 
             scores_with_pp.push(ScoreData {
                 score: score.clone(),
                 map: beatmap.clone(),
-                pp: result.pp(),
-                sr: result.stars(),
-                pfc: score.perfect_combo,
+                attributes: attributes.clone(),
             });
             score_count += 1;
         }
@@ -116,7 +112,7 @@ fn remove_duplicates(scores_with_pp: Vec<ScoreData>) -> Vec<ScoreData> {
         scores_by_hash
             .entry(hash)
             .and_modify(|e| {
-                if score_pp.pp > e.pp {
+                if score_pp.attributes.pp() > e.attributes.pp() {
                     *e = score_pp.clone();
                 }
             })
@@ -166,7 +162,7 @@ bitflags! {
 }
 
 fn export_tops(unique_scores: &mut [ScoreData]) -> Result<(), io::Error> {
-    unique_scores.sort_by(|a, b| b.pp.partial_cmp(&a.pp).unwrap_or(std::cmp::Ordering::Equal));
+    unique_scores.sort_by(|a, b| b.attributes.pp().partial_cmp(&a.attributes.pp()).unwrap_or(std::cmp::Ordering::Equal));
 
     let timestamp = Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
     let file_name = format!("tops_{}.txt", timestamp);
@@ -178,7 +174,7 @@ fn export_tops(unique_scores: &mut [ScoreData]) -> Result<(), io::Error> {
     let total_pp: f64 = unique_scores
         .iter()
         .enumerate()
-        .map(|(i, score_pp)| score_pp.pp * 0.95f64.powi(i as i32))
+        .map(|(i, score_pp)| score_pp.attributes.pp() * 0.95f64.powi(i as i32))
         .sum();
     println!("Total pp (without bonus pp): {:.2}", total_pp);
 
@@ -188,7 +184,7 @@ fn export_tops(unique_scores: &mut [ScoreData]) -> Result<(), io::Error> {
 
     println!("Counting 9* PFCs");
     let count = unique_scores.iter()
-        .filter(|score| score.sr >= 9.0 && score.sr < 10.0 && score.pfc)
+        .filter(|score| score.attributes.stars() >= 9.0 && score.attributes.stars() < 10.0 && score.score.perfect_combo)
         .count();
     println!("9* PFCs: {}", count);
 
@@ -219,7 +215,7 @@ fn export_tops(unique_scores: &mut [ScoreData]) -> Result<(), io::Error> {
         writeln!(
             file,
             "     {:.2}pp {}",
-            score_pp.pp,
+            score_pp.attributes.pp(),
             mod_display
         )?;
     }
